@@ -2,10 +2,30 @@
 ;; using the "half-closure" approach from Reynold's definitional
 ;; interpreters.
 
-(defrel (evalo expr val)
-  (eval-expo expr initial-env val))
+(defrel (make-meta-cont-levelo level env)
+  (ext-env*o (list 'level) (list level) initial-env env))
 
-(defrel (eval-expo expr env val)
+(defrel (get-meta-conto level meta-k)
+  (fresh (env)
+    (make-meta-cont-levelo level env)
+    (== meta-k (cons env `(next-meta-cont ,level)))))
+
+(defrel (meta-cont-forceo mc fc)
+  (conde
+   ((fresh (level)
+     (== mc `(next-meta-cont ,level))
+     (get-meta-conto `(s ,level) fc)))
+   ((fresh (a d)
+     (== mc (cons a d))
+     (=/= a 'next-meta-cont)
+     (== mc fc)))))
+
+(defrel (evalo expr val)
+  (fresh (mc)
+    (get-meta-conto 'z mc)
+    (eval-expo expr initial-env mc val)))
+
+(defrel (eval-expo expr env meta-k val)
   (conde
     ((== `(quote ,val) expr)
      (absent-tago val)
@@ -25,30 +45,50 @@
          ((list-of-symbolso x)))
        (not-in-envo 'lambda env)))
 
+    ((fresh (e r body)
+       (== `(mu (,e ,r) ,body) expr)
+       (== `(mu-reifier (,e ,r) ,body) val)
+       (not-in-envo 'mu env)))
+
+    ((fresh (e r e-res r-res)
+       (== `(meaning ,e ,r)  expr)
+       (not-in-envo 'meaning env)
+       (eval-expo e env meta-k e-res)
+       (eval-expo r env meta-k r-res)
+       (eval-expo e-res r-res (cons env meta-k) val)))
+
+    ((fresh (rator rands e r body env-res forced-mc upper-env upper-meta-cont)
+       (== `(,rator . ,rands) expr)
+       (eval-expo rator env meta-k `(mu-reifier (,e ,r) ,body))
+       (== forced-mc (cons upper-env upper-meta-cont))
+       (ext-env*o (list e r) (list rands env) upper-env env-res)
+       (meta-cont-forceo meta-k forced-mc)
+       (eval-expo body env-res upper-meta-cont val)))
+
     ((fresh (rator x rands body env^ a* res)
        (== `(,rator . ,rands) expr)
        ;; variadic
        (symbolo x)
        (== `((,x . (val . ,a*)) . ,env^) res)
-       (eval-expo rator env `(closure (lambda ,x ,body) ,env^))
-       (eval-expo body res val)
-       (eval-listo rands env a*)))
+       (eval-expo rator env meta-k `(closure (lambda ,x ,body) ,env^))
+       (eval-expo body res meta-k val)
+       (eval-listo rands env meta-k a*)))
 
     ((fresh (rator x* rands body env^ a* res)
        (== `(,rator . ,rands) expr)
        ;; Multi-argument
-       (eval-expo rator env `(closure (lambda ,x* ,body) ,env^))
-       (eval-listo rands env a*)
+       (eval-expo rator env meta-k `(closure (lambda ,x* ,body) ,env^))
+       (eval-listo rands env meta-k a*)
        (ext-env*o x* a* env^ res)
-       (eval-expo body res val)))
+       (eval-expo body res meta-k val)))
 
     ((fresh (rator x* rands a* prim-id)
        (== `(,rator . ,rands) expr)
-       (eval-expo rator env `(prim . ,prim-id))
+       (eval-expo rator env meta-k `(prim . ,prim-id))
        (eval-primo prim-id a* val)
-       (eval-listo rands env a*)))
+       (eval-listo rands env meta-k a*)))
 
-    ((handle-matcho expr env val))
+    ((handle-matcho expr env meta-k val))
 
     ((fresh (p-name x body letrec-body)
        ;; single-function variadic letrec version
@@ -63,9 +103,10 @@
        (not-in-envo 'letrec env)
        (eval-expo letrec-body
                   `((,p-name . (rec . (lambda ,x ,body))) . ,env)
+                  meta-k
                   val)))
 
-    ((prim-expo expr env val))
+    ((prim-expo expr env meta-k val))
 
     ))
 
@@ -92,15 +133,15 @@
        (=/= y x)
        (not-in-envo x rest)))))
 
-(defrel (eval-listo expr env val)
+(defrel (eval-listo expr env meta-k val)
   (conde
     ((== '() expr)
      (== '() val))
     ((fresh (a d v-a v-d)
        (== `(,a . ,d) expr)
        (== `(,v-a . ,v-d) val)
-       (eval-expo a env v-a)
-       (eval-listo d env v-d)))))
+       (eval-expo a env meta-k v-a)
+       (eval-listo d env meta-k v-d)))))
 
 ;; need to make sure lambdas are well formed.
 ;; grammar constraints would be useful here!!!
@@ -165,70 +206,70 @@
          ((== '() v) (== #t val))
          ((=/= '() v) (== #f val))))]))
 
-(defrel (prim-expo expr env val)
+(defrel (prim-expo expr env meta-k val)
   (conde
-    ((boolean-primo expr env val))
-    ((and-primo expr env val))
-    ((or-primo expr env val))
-    ((if-primo expr env val))))
+    ((boolean-primo expr env meta-k val))
+    ((and-primo expr env meta-k val))
+    ((or-primo expr env meta-k val))
+    ((if-primo expr env meta-k val))))
 
-(defrel (boolean-primo expr env val)
+(defrel (boolean-primo expr env meta-k val)
   (conde
     ((== #t expr) (== #t val))
     ((== #f expr) (== #f val))))
 
-(defrel (and-primo expr env val)
+(defrel (and-primo expr env meta-k val)
   (fresh (e*)
     (== `(and . ,e*) expr)
     (not-in-envo 'and env)
-    (ando e* env val)))
+    (ando e* env meta-k val)))
 
-(defrel (ando e* env val)
+(defrel (ando e* env meta-k val)
   (conde
     ((== '() e*) (== #t val))
     ((fresh (e)
        (== `(,e) e*)
-       (eval-expo e env val)))
+       (eval-expo e env meta-k val)))
     ((fresh (e1 e2 e-rest v)
        (== `(,e1 ,e2 . ,e-rest) e*)
        (conde
          ((== #f v)
           (== #f val)
-          (eval-expo e1 env v))
+          (eval-expo e1 env meta-k v))
          ((=/= #f v)
-          (eval-expo e1 env v)
-          (ando `(,e2 . ,e-rest) env val)))))))
+          (eval-expo e1 env meta-mk v)
+          (ando `(,e2 . ,e-rest) env meta-k val)))))))
 
-(defrel (or-primo expr env val)
+(defrel (or-primo expr env meta-k val)
   (fresh (e*)
     (== `(or . ,e*) expr)
     (not-in-envo 'or env)
-    (oro e* env val)))
+    (oro e* env meta-k val)))
 
-(defrel (oro e* env val)
+(defrel (oro e* env meta-k val)
   (conde
     ((== '() e*) (== #f val))
     ((fresh (e)
        (== `(,e) e*)
-       (eval-expo e env val)))
+       (eval-expo e env meta-k val)))
     ((fresh (e1 e2 e-rest v)
        (== `(,e1 ,e2 . ,e-rest) e*)
        (conde
          ((=/= #f v)
           (== v val)
-          (eval-expo e1 env v))
+          (eval-expo e1 env meta-k v))
          ((== #f v)
-          (eval-expo e1 env v)
-          (oro `(,e2 . ,e-rest) env val)))))))
+          (eval-expo e1 env meta-k v)
+          (oro `(,e2 . ,e-rest) env meta-k val)))))))
 
-(defrel (if-primo expr env val)
+(defrel (if-primo expr env meta-k val)
   (fresh (e1 e2 e3 t)
     (== `(if ,e1 ,e2 ,e3) expr)
     (not-in-envo 'if env)
-    (eval-expo e1 env t)
+    (eval-expo e1 env meta-k t)
     (conde
-      ((=/= #f t) (eval-expo e2 env val))
-      ((== #f t) (eval-expo e3 env val)))))
+      ((=/= #f t) (eval-expo e2 env meta-k val))
+      ((== #f t) (eval-expo e3 env meta-k val)))))
 
 (define initial-env `((list . (val . (closure (lambda x x) ,empty-env)))
                       (not . (val . (prim . not)))
@@ -248,14 +289,15 @@
 (defrel (absent-tago val)
   (fresh ()
     (absento 'closure val)
+    (absento 'mu-reifier val)
     (absento 'prim val)))
 
-(defrel (handle-matcho expr env val)
+(defrel (handle-matcho expr env meta-k val)
   (fresh (against-expr mval clause clauses)
     (== `(match ,against-expr ,clause . ,clauses) expr)
     (not-in-envo 'match env)
-    (eval-expo against-expr env mval)
-    (match-clauses mval `(,clause . ,clauses) env val)))
+    (eval-expo against-expr env meta-k mval)
+    (match-clauses mval `(,clause . ,clauses) env meta-k val)))
 
 (defrel (not-symbolo t)
   (conde
@@ -298,16 +340,16 @@
        (== `((,y . (val . ,v)) . ,res) env-out)
        (regular-env-appendo rest env2 res)))))
 
-(defrel (match-clauses mval clauses env val)
+(defrel (match-clauses mval clauses env meta-k val)
   (fresh (p result-expr d penv)
     (== `((,p ,result-expr) . ,d) clauses)
     (conde
       ((fresh (env^)
          (p-match p mval '() penv)
          (regular-env-appendo penv env env^)
-         (eval-expo result-expr env^ val)))
+         (eval-expo result-expr env^ meta-k val)))
       ((p-no-match p mval '() penv)
-       (match-clauses mval d env val)))))
+       (match-clauses mval d env meta-k val)))))
 
 (defrel (var-p-match var mval penv penv-out)
   (fresh (val)
